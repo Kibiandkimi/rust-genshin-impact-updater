@@ -279,7 +279,20 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
             fs::create_dir_all(parent)?;
         }
 
-        fs::copy(source_path, &dest_path)?;
+        fs::copy(source_path, &dest_path).or_else(|err| {
+            println!("Error: {}", err);
+            println!("Continue(y/n)?");
+            let mut choice = String::new();
+            io::stdin()
+                .read_line(&mut choice)
+                .expect("input error.");
+            choice.to_lowercase();
+            if choice[0] == 'y' || choice[0] == 'Y' {
+                Ok(0)
+            } else {
+                Err(anyhow!("Error and canceled by user."))
+            }
+        })?;
         pb.inc(1);
     }
     pb.finish_with_message("📄 文件复制完成");
