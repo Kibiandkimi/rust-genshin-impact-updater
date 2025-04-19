@@ -1,0 +1,16 @@
+[package]
+name = "genshin-impact-updater"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zip = "0.6"
+walkdir = "2.4"
+fs_extra = "1.2"
+anyhow = "1.0"
+
+tempfile = "3.3"
+mockito = "0.32"
