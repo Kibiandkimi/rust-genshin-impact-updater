@@ -1,21 +1,17 @@
 
-use std::{
-    fs::OpenOptions,
-    io::{Seek, SeekFrom, Write, copy},
-    thread,
-    time::Duration,
-    process::Command,
-};
+use std::{fs::OpenOptions, io::{Seek, SeekFrom, Write, copy}, thread, time::Duration, process::Command, io};
 use reqwest::blocking::Client;
 use reqwest::header::{RANGE, USER_AGENT};
 use anyhow::{Result, anyhow};
 
 use serde::Deserialize;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use fs_extra::file::{copy_with_progress, CopyOptions, TransitProcess};
 use crate::{UNPACK_DIR, UPDATE_DIR};
+
+use indicatif::{ProgressBar, ProgressStyle};
 
 /// 下载文件，支持断点续传与失败重试
 pub fn download_with_resume(url: &str, output_path: &str, max_retries: u8) -> Result<()> {
@@ -25,13 +21,11 @@ pub fn download_with_resume(url: &str, output_path: &str, max_retries: u8) -> Re
     let mut downloaded = 0u64;
 
     // 如果已有部分文件，获取已下载大小
-    if std::path::Path::new(output_path).exists() {
-        downloaded = std::fs::metadata(output_path)?.len();
+    if Path::new(output_path).exists() {
+        downloaded = fs::metadata(output_path)?.len();
     }
 
     loop {
-        println!("📥 正在下载: {}（已下载 {} 字节）", url, downloaded);
-
         let resp = client
             .get(url)
             .header(USER_AGENT, "genshin-updater")
@@ -40,23 +34,34 @@ pub fn download_with_resume(url: &str, output_path: &str, max_retries: u8) -> Re
 
         match resp {
             Ok(mut res) => {
-                if !res.status().is_success() && res.status().as_u16() != 206 {
-                    return Err(anyhow!("❌ 下载失败: HTTP {}", res.status()));
-                }
+                let total_size = res
+                    .headers()
+                    .get("Content-Length")
+                    .and_then(|len| len.to_str().ok()?.parse::<u64>().ok())
+                    .unwrap_or(0);
 
-                // 追加模式打开文件
+                let pb = ProgressBar::new(total_size);
+                pb.set_style(ProgressStyle::with_template(
+                    "[{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+                )?
+                .progress_chars("=>-"));
+
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(output_path)?;
 
-                // while let Some(chunk) = res.chunk().ok().flatten() {
-                //     file.write_all(&chunk)?;
-                //     downloaded += chunk.len() as u64;
-                // }
-                copy(&mut res, &mut file)?;
+                let mut buffer = [0; 8192];
+                loop {
+                    let read = res.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    file.write_all(&buffer[..read])?;
+                    pb.inc(read as u64);
+                }
 
-                println!("✅ 下载完成");
+                pb.finish_with_message("✅ 下载完成");
                 return Ok(());
             }
             Err(e) => {
@@ -138,11 +143,41 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
         download_with_resume(&url, &file_name, 5)?;
     }
 
+    use indicatif::{ProgressBar, ProgressStyle};
+
     println!("📦 正在解压...");
     let zipfile = File::open(&file_name)?;
     let mut archive = zip::ZipArchive::new(zipfile)?;
-    archive.extract(UNPACK_DIR)?;
-    println!("✅ 解压完成");
+
+    let file_count = archive.len();
+    let pb = ProgressBar::new(file_count as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("📦 解压中 {wide_bar} {pos}/{len} {msg}")
+            .unwrap()
+    );
+
+    for i in 0..file_count {
+        let mut file = archive.by_index(i)?;
+        let outpath = Path::new(UNPACK_DIR).join(file.sanitized_name());
+
+        // 创建文件夹结构
+        if file.is_dir() {
+            fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    fs::create_dir_all(p)?;
+                }
+            }
+            let mut outfile = File::create(&outpath)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+
+        pb.inc(1);
+    }
+    pb.finish_with_message("📦 解压完成");
+
 
     let update_dir = Path::new(UNPACK_DIR);
 
@@ -153,23 +188,28 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
     let hdiff_files_path = update_dir.join("hdifffiles.txt");
     if hdiff_files_path.exists() {
         let files_to_patch = parse_line_json(&hdiff_files_path)?;
+        let pb = ProgressBar::new(files_to_patch.len() as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{prefix:.green} {wide_bar} {pos}/{len} {msg}")
+            .unwrap());
+
+        pb.set_prefix("🔧 补丁中");
 
         for remote_name in files_to_patch {
             let hdiff_path = update_dir.join(format!("{}.hdiff", remote_name));
             let target_path = genshin_root.join(&remote_name);
+            let dest_path = update_dir.join(&remote_name);
 
-            // 确保原文件存在
             if !target_path.exists() {
-                return Err(anyhow!("❌ 原文件不存在: {}", target_path.display()));
+                pb.println(format!("⚠️ 跳过不存在文件: {}", target_path.display()));
+                pb.inc(1);
+                continue;
             }
 
-            println!("🔧 正在补丁: {}", remote_name);
-
-            // 使用hdiffz应用补丁
-            let status = Command::new("hdiffz")
+            let status = Command::new("./hpatchz")
                 .arg(&target_path)
                 .arg(&hdiff_path)
-                .arg(&target_path) // 直接覆盖原文件
+                .arg(&dest_path)
                 .status()?;
 
             if !status.success() {
@@ -177,7 +217,10 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
             }
 
             fs::remove_file(&hdiff_path)?;
+            pb.inc(1);
         }
+
+        pb.finish_with_message("🔧 补丁完成");
     }
 
     fs::remove_file(&hdiff_files_path)?;
@@ -212,36 +255,35 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
     ];
 
     // 使用 walkdir 遍历目录
-    for entry in walkdir::WalkDir::new(&update_dir)
+    let all_files: Vec<_> = walkdir::WalkDir::new(&update_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-    {
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            let p = e.path().to_string_lossy();
+            !skip_files.iter().any(|ext| p.ends_with(ext))
+        })
+        .collect();
+
+    let pb = ProgressBar::new(all_files.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("📄 复制中 {wide_bar} {pos}/{len} {msg}")
+        .unwrap());
+
+    for entry in all_files {
         let source_path = entry.path();
-
-        // 跳过目录和需要过滤的文件
-        if source_path.is_dir()
-            || skip_files.iter().any(|ext|
-                source_path.to_string_lossy().ends_with(ext))
-        {
-            continue;
-        }
-
-        // 获取相对路径（相对于update_dir）
         let relative_path = source_path.strip_prefix(&update_dir)?;
         let dest_path = game_dir.join(relative_path);
 
-        // 创建目标目录
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // 执行文件复制
-        println!("📄 复制: {} ➔ {}",
-            relative_path.display(),
-            dest_path.display()
-        );
         fs::copy(source_path, &dest_path)?;
+        pb.inc(1);
     }
+    pb.finish_with_message("📄 文件复制完成");
+
 
     println!("🧹 清理临时文件...");
     fs::remove_dir_all(UNPACK_DIR)?;

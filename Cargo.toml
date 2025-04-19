@@ -11,6 +11,7 @@ zip = "0.6"
 walkdir = "2.4"
 fs_extra = "1.2"
 anyhow = "1.0"
+indicatif = "0.17"
 
 tempfile = "3.3"
 mockito = "0.32"

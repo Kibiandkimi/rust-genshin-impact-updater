@@ -33,8 +33,8 @@ fn main() -> Result<()> {
     // 2. 获取最新安装包链接
     let response = reqwest::blocking::get(API_URL)?.json::<Response>()?;
 
-    println!("Game id: {}", &response.data.game_packages[0].game.id);
-    println!("Game version: {}", &response.data.game_packages[0].main.major.version);
+    println!("Latest Game id: {}", &response.data.game_packages[0].game.id);
+    println!("Latest Game version: {}", &response.data.game_packages[0].main.major.version);
 
     println!("Choose which do you want to upgrade from: ");
     println!("  1) {}", &response.data.game_packages[0].main.patches[0].version);
