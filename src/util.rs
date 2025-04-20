@@ -221,9 +221,8 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
         }
 
         pb.finish_with_message("🔧 补丁完成");
+        fs::remove_file(&hdiff_files_path)?;
     }
-
-    fs::remove_file(&hdiff_files_path)?;
 
     // 2. 处理deletefiles.txt
     let delete_files_path = update_dir.join("deletefiles.txt");
@@ -243,9 +242,8 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
                     .or_else(|_| fs::remove_dir_all(&delete_path))?;
             }
         }
+        fs::remove_file(&update_dir.join("deletefiles.txt"))?;
     }
-
-    fs::remove_file(&update_dir.join("deletefiles.txt"))?;
 
     println!("📁 正在复制更新文件...");
     let skip_files = [
@@ -286,8 +284,8 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
             io::stdin()
                 .read_line(&mut choice)
                 .expect("input error.");
-            choice.to_lowercase();
-            if choice[0] == 'y' || choice[0] == 'Y' {
+            let choice = choice.to_lowercase();
+            if choice == "y" {
                 Ok(0)
             } else {
                 Err(anyhow!("Error and canceled by user."))
