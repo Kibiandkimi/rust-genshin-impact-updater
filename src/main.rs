@@ -89,6 +89,8 @@ fn main() -> Result<()> {
                  .collect::<Vec<_>>()
                  .join(" "));
 
+    ensure_writable(Path::new(&game_root))?;
+
     process_update_package(game_pkg.url.clone(), game_pkg.size, Path::new(&game_root))?;
 
     for audio_pkg in audio_pkgs.iter() {

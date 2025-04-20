@@ -149,6 +149,8 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
     let zipfile = File::open(&file_name)?;
     let mut archive = zip::ZipArchive::new(zipfile)?;
 
+    ensure_writable(Path::new(UNPACK_DIR))?;
+
     let file_count = archive.len();
     let pb = ProgressBar::new(file_count as u64);
     pb.set_style(
@@ -301,6 +303,31 @@ pub fn process_update_package(url: String, siz: u64, game_dir: &Path) -> Result<
     fs::remove_dir_all(UPDATE_DIR)?;
 
     Ok(())
+}
+
+use std::fs::Permissions;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+/// 将目标路径的权限设置为可读写（644）
+/// 可递归设置目录下所有子文件
+#[cfg(unix)]
+pub fn ensure_writable(path: &Path) -> std::io::Result<()> {
+    if path.is_file() {
+        fs::set_permissions(path, Permissions::from_mode(0o644))?;
+    } else if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            ensure_writable(&entry.path())?;
+        }
+        fs::set_permissions(path, Permissions::from_mode(0o755))?; // 目录 rwx
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_writable(_path: &Path) -> std::io::Result<()> {
+    Ok(()) // noop on Windows for now
 }
 
 #[cfg(test)]
